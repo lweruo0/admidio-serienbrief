@@ -1,0 +1,29 @@
+name: Metaworkflow
+run-name: "🚀 Metaworkflow (${{ github.actor }} auf  ${{ github.repository }}@${{ github.ref_name }})"
+
+
+on:
+  workflow_dispatch:  # Ermoeglicht manuelles Triggern
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+
+# ⚠️ WICHTIG: Dem GITHUB_TOKEN Schreibrechte geben
+permissions:
+  contents: write
+  pull-requests: write   # falls der called workflow PR-Kommentare/Reviews schreibt
+  # checks: write        # nur falls notwendig
+  # statuses: write      # nur falls notwendig
+
+
+jobs:
+  pylint:
+    uses: lweruo0/workflows/.github/workflows/pylint_and_black.yml@main
+
+  phpstan:
+    uses: lweruo0/workflows/.github/workflows/phpstan_and_php_cs_fixer.yml@main
+
+  js-css-minimize:
+    uses: lweruo0/workflows/.github/workflows/js_css_minimize.yml@main
