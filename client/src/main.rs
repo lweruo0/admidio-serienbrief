@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod admidio;
 mod merge;
 mod word;
 
@@ -12,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+use admidio::{AdmidioConfig, ColumnMapping, DownloadEvent, OtpConfig};
 use merge::{DataSourceInfo, MergeConfig, Progress};
 
 /// Standard-Muster für die Dateinamen, entspricht dem Python-Original.
@@ -53,6 +55,18 @@ struct Settings {
     file_pattern: String,
     thread_count: usize,
     kill_word: bool,
+    /// Anmeldename für Admidio. Das Passwort wird bewusst nicht gespeichert.
+    admidio_username: String,
+    /// CSV-Export-URLs aus Admidio, eine je Zeile.
+    admidio_urls: String,
+    /// Zuordnung der CSV-Spalten zu den Feldnamen im Admidio-Export.
+    admidio_columns: Vec<ColumnMapping>,
+    /// Adresse der WordPress-Seite mit dem OTP-Endpunkt; leer schaltet den Abruf ab.
+    otp_site_url: String,
+    /// Passwort des OTP-Endpunkts (wird gespeichert, da es ein fester Dienstschlüssel ist).
+    otp_password: String,
+    /// Bestehende Einmalpasswörter auf dem Server löschen und neu erzeugen.
+    otp_clear: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +78,12 @@ impl Default for Settings {
             file_pattern: DEFAULT_PATTERN.to_string(),
             thread_count: 8,
             kill_word: false,
+            admidio_username: String::new(),
+            admidio_urls: String::new(),
+            admidio_columns: Vec::new(),
+            otp_site_url: String::new(),
+            otp_password: String::new(),
+            otp_clear: true,
         }
     }
 }
@@ -81,6 +101,14 @@ struct SerienbriefApp {
     failed: usize,
     started: Option<Instant>,
     finished: Option<Duration>,
+    /// Admidio-Passwort, nur für die laufende Sitzung.
+    admidio_password: String,
+    /// Kanal des laufenden Downloads aus Admidio.
+    download_receiver: Option<Receiver<DownloadEvent>>,
+    /// Ergebnis des letzten Downloads für die Anzeige.
+    download_status: Option<Result<String, String>>,
+    /// Fenster mit der Spaltenzuordnung ist geöffnet.
+    show_column_config: bool,
 }
 
 impl SerienbriefApp {
@@ -117,6 +145,350 @@ impl SerienbriefApp {
 
     fn is_running(&self) -> bool {
         self.receiver.is_some()
+    }
+
+    fn is_downloading(&self) -> bool {
+        self.download_receiver.is_some()
+    }
+
+    /// Prüft die Admidio-Eingaben und liefert die Download-Konfiguration oder den ersten Fehler.
+    fn validate_download(&self) -> Result<AdmidioConfig, String> {
+        if self.settings.admidio_username.trim().is_empty() {
+            return Err("Bitte den Admidio-Benutzernamen eingeben.".to_string());
+        }
+        if self.admidio_password.is_empty() {
+            return Err("Bitte das Admidio-Passwort eingeben.".to_string());
+        }
+        let urls = admidio::parse_urls(&self.settings.admidio_urls);
+        if urls.is_empty() {
+            return Err("Bitte mindestens eine Export-URL eingeben.".to_string());
+        }
+        for url in &urls {
+            if !url.starts_with("https://") && !url.starts_with("http://") {
+                return Err(format!("Keine gültige URL: {url}"));
+            }
+            admidio::login_url(url).map_err(|error| error.to_string())?;
+        }
+        admidio::column_renames(&self.settings.admidio_columns).map_err(|error| error.to_string())?;
+        let otp = self.validate_otp()?;
+        Ok(AdmidioConfig {
+            username: self.settings.admidio_username.trim().to_string(),
+            password: self.admidio_password.clone(),
+            urls,
+            target: PathBuf::new(),
+            columns: self.settings.admidio_columns.clone(),
+            otp,
+        })
+    }
+
+    /// Prüft die OTP-Eingaben; ohne WordPress-Adresse ist der Abruf abgeschaltet.
+    fn validate_otp(&self) -> Result<Option<OtpConfig>, String> {
+        let site_url = self.settings.otp_site_url.trim();
+        if site_url.is_empty() {
+            return Ok(None);
+        }
+        if !site_url.starts_with("https://") && !site_url.starts_with("http://") {
+            return Err(format!("Keine gültige WordPress-Adresse: {site_url}"));
+        }
+        if self.settings.otp_password.trim().is_empty() {
+            return Err("Bitte das Passwort des OTP-Endpunkts eingeben.".to_string());
+        }
+        Ok(Some(OtpConfig {
+            site_url: site_url.to_string(),
+            password: self.settings.otp_password.trim().to_string(),
+            clear: self.settings.otp_clear,
+        }))
+    }
+
+    /// Anzahl der ausgefüllten Zeilen der Spaltenzuordnung.
+    fn column_mapping_count(&self) -> usize {
+        self.settings
+            .admidio_columns
+            .iter()
+            .filter(|mapping| !mapping.csv.trim().is_empty() || !mapping.admidio.trim().is_empty())
+            .count()
+    }
+
+    /// Zeichnet das Fenster mit der Spaltenzuordnung (CSV-Spalte ↔ Feld im Admidio-Export).
+    fn column_config_window(&mut self, ctx: &egui::Context, enabled: bool) {
+        let mut open = self.show_column_config;
+        egui::Window::new("Spaltenzuordnung für den Admidio-Download")
+            .open(&mut open)
+            .default_width(600.0)
+            .resizable(true)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Links der Spaltenname, den der Serienbrief (CSV) erwartet, rechts der Name des \
+                     Felds im Admidio-Export. Beim Download werden die Spalten entsprechend \
+                     umbenannt. Spalten, die hier nicht aufgeführt sind, behalten ihren Namen aus \
+                     Admidio.",
+                );
+                ui.add_space(6.0);
+
+                let mut remove = None;
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    egui::Grid::new("column_mapping")
+                        .num_columns(3)
+                        .spacing([12.0, 6.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.strong("Spalte in CSV / Serienbrief");
+                            ui.strong("Feld im Admidio-Export");
+                            ui.label("");
+                            ui.end_row();
+                            for (index, mapping) in self.settings.admidio_columns.iter_mut().enumerate() {
+                                ui.add_enabled(
+                                    enabled,
+                                    egui::TextEdit::singleline(&mut mapping.csv).desired_width(240.0),
+                                );
+                                ui.add_enabled(
+                                    enabled,
+                                    egui::TextEdit::singleline(&mut mapping.admidio).desired_width(240.0),
+                                );
+                                if ui
+                                    .add_enabled(enabled, egui::Button::new("✖"))
+                                    .on_hover_text("Zeile entfernen")
+                                    .clicked()
+                                {
+                                    remove = Some(index);
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+                if let Some(index) = remove {
+                    self.settings.admidio_columns.remove(index);
+                }
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(enabled, egui::Button::new("Zeile hinzufügen")).clicked() {
+                        self.settings.admidio_columns.push(ColumnMapping::default());
+                    }
+                    let fields = self
+                        .data_info
+                        .as_ref()
+                        .map(|info| info.fields.clone())
+                        .unwrap_or_default();
+                    if ui
+                        .add_enabled(
+                            enabled && !fields.is_empty(),
+                            egui::Button::new("Spalten der Datenquelle übernehmen"),
+                        )
+                        .on_hover_text(
+                            "Legt für jede Spalte der aktuellen Datenquelle eine Zeile an, die noch fehlt. \
+                             Das Admidio-Feld wird mit demselben Namen vorbelegt.",
+                        )
+                        .clicked()
+                    {
+                        for field in fields {
+                            let exists = self
+                                .settings
+                                .admidio_columns
+                                .iter()
+                                .any(|mapping| mapping.csv.trim() == field);
+                            if !exists {
+                                self.settings.admidio_columns.push(ColumnMapping {
+                                    csv: field.clone(),
+                                    admidio: field,
+                                });
+                            }
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            enabled && !self.settings.admidio_columns.is_empty(),
+                            egui::Button::new("Alle entfernen"),
+                        )
+                        .clicked()
+                    {
+                        self.settings.admidio_columns.clear();
+                    }
+                });
+
+                ui.add_space(4.0);
+                match admidio::column_renames(&self.settings.admidio_columns) {
+                    Ok(renames) => {
+                        ui.label(format!("{} Spalten werden beim Download umbenannt.", renames.len()));
+                    }
+                    Err(error) => {
+                        ui.colored_label(egui::Color32::RED, error.to_string());
+                    }
+                }
+            });
+        self.show_column_config = open;
+    }
+
+    /// Fragt bei leerer Datenquelle nach einer Zieldatei und startet den Download.
+    fn start_download(&mut self, mut config: AdmidioConfig) {
+        let current = self.settings.data_source.trim();
+        let target = if current.is_empty() {
+            let mut dialog = rfd::FileDialog::new()
+                .add_filter("CSV-Dateien", &["csv"])
+                .set_file_name("admidio_export.csv");
+            if let Some(folder) = Path::new(self.settings.template.trim()).parent() {
+                if folder.is_dir() {
+                    dialog = dialog.set_directory(folder);
+                }
+            }
+            match dialog.save_file() {
+                Some(path) => path,
+                None => return,
+            }
+        } else {
+            PathBuf::from(current)
+        };
+        self.settings.data_source = target.to_string_lossy().into_owned();
+        config.target = target;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.download_status = None;
+        self.download_receiver = Some(rx);
+        self.log.push("Datenquelle wird aus Admidio aktualisiert ...".to_string());
+        admidio::start(config, tx);
+    }
+
+    /// Holt die Meldungen des Download-Threads ab.
+    fn poll_download(&mut self) {
+        let Some(receiver) = &self.download_receiver else {
+            return;
+        };
+        let mut finished = None;
+        for event in receiver.try_iter() {
+            match event {
+                DownloadEvent::Log(line) => self.log.push(line),
+                DownloadEvent::Finished(result) => finished = Some(result),
+            }
+        }
+        if let Some(result) = finished {
+            self.download_receiver = None;
+            self.download_status = Some(match result {
+                Ok(path) => {
+                    self.reload_data_source();
+                    Ok(format!("Datenquelle aktualisiert: {}", path.display()))
+                }
+                Err(message) => {
+                    self.log.push(message.clone());
+                    Err(message)
+                }
+            });
+        }
+    }
+
+    /// Zeichnet den aufklappbaren Bereich zum Aktualisieren der Datenquelle aus Admidio.
+    fn admidio_section(&mut self, ui: &mut egui::Ui, editable: bool) {
+        egui::CollapsingHeader::new("Datenquelle aus Admidio aktualisieren")
+            .default_open(!self.settings.admidio_urls.trim().is_empty())
+            .show(ui, |ui| {
+                let enabled = editable && !self.is_downloading();
+                egui::Grid::new("admidio")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Benutzername");
+                        ui.add_enabled(
+                            enabled,
+                            egui::TextEdit::singleline(&mut self.settings.admidio_username)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("Passwort");
+                        ui.add_enabled(
+                            enabled,
+                            egui::TextEdit::singleline(&mut self.admidio_password)
+                                .password(true)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("Export-URLs\n(eine je Rolle)");
+                        ui.add_enabled(
+                            enabled,
+                            egui::TextEdit::multiline(&mut self.settings.admidio_urls)
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY)
+                                .hint_text(
+                                    "https://.../modules/groups-roles/lists_show.php?list_uuid=...&role_list=...&mode=csv",
+                                ),
+                        );
+                        ui.end_row();
+
+                        ui.label("Spaltenzuordnung");
+                        ui.horizontal(|ui| {
+                            if ui.button("Bearbeiten …").clicked() {
+                                self.show_column_config = true;
+                            }
+                            let count = self.column_mapping_count();
+                            if count == 0 {
+                                ui.label("keine, Spaltennamen werden unverändert übernommen");
+                            } else {
+                                ui.label(format!("{count} Spalten zugeordnet"));
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Einmalpasswörter\n(WordPress)");
+                        ui.add_enabled(
+                            enabled,
+                            egui::TextEdit::singleline(&mut self.settings.otp_site_url)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("https://<wordpress-seite>/ – leer lassen, um keine OTP-Spalten zu ergänzen"),
+                        );
+                        ui.end_row();
+
+                        ui.label("OTP-Passwort");
+                        ui.add_enabled(
+                            enabled,
+                            egui::TextEdit::singleline(&mut self.settings.otp_password)
+                                .password(true)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.end_row();
+
+                        ui.label("");
+                        ui.add_enabled(
+                            enabled,
+                            egui::Checkbox::new(
+                                &mut self.settings.otp_clear,
+                                "Einmalpasswörter auf dem Server neu erzeugen (clearotp=1)",
+                            ),
+                        );
+                        ui.end_row();
+                    });
+
+                let validation = self.validate_download();
+                ui.horizontal(|ui| {
+                    let can_start = enabled && validation.is_ok();
+                    if ui
+                        .add_enabled(can_start, egui::Button::new("CSV aus Admidio laden"))
+                        .clicked()
+                    {
+                        if let Ok(config) = &validation {
+                            self.start_download(config.clone());
+                        }
+                    }
+                    if self.is_downloading() {
+                        ui.spinner();
+                        ui.label("Download läuft ...");
+                    } else if let Err(message) = &validation {
+                        ui.colored_label(egui::Color32::GRAY, message);
+                    } else if let Some(status) = &self.download_status {
+                        match status {
+                            Ok(message) => ui.colored_label(egui::Color32::DARK_GREEN, message),
+                            Err(message) => ui.colored_label(egui::Color32::RED, message),
+                        };
+                    }
+                });
+                ui.label(
+                    "Die Exporte werden nach Spaltennamen zusammengeführt, gemäß Spaltenzuordnung \
+                     umbenannt und in die oben gewählte Datenquelle geschrieben. Das Admidio-Passwort \
+                     wird nicht gespeichert. Ist eine WordPress-Adresse eingetragen, werden die \
+                     Einmalpasswörter abgerufen, über die Spalten username bzw. Mitgliedsnummer \
+                     zugeordnet und als Spalten otp1 und otp2 ergänzt.",
+                );
+            });
     }
 
     /// Prüft die Eingaben und liefert die Konfiguration oder den ersten Fehler.
@@ -277,7 +649,8 @@ impl eframe::App for SerienbriefApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_progress();
-        if self.is_running() {
+        self.poll_download();
+        if self.is_running() || self.is_downloading() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
         let editable = !self.is_running();
@@ -364,6 +737,8 @@ impl eframe::App for SerienbriefApp {
                 self.reload_data_source();
             }
 
+            ui.add_space(4.0);
+            self.admidio_section(ui, editable);
             ui.add_space(6.0);
 
             // Informationen zur Datenquelle und Vorschau des Dateinamens.
@@ -391,7 +766,7 @@ impl eframe::App for SerienbriefApp {
             // Start-Knopf und Fortschritt.
             let validation = self.validate();
             ui.horizontal(|ui| {
-                let can_start = editable && validation.is_ok();
+                let can_start = editable && !self.is_downloading() && validation.is_ok();
                 if ui.add_enabled(can_start, egui::Button::new("PDFs erzeugen")).clicked() {
                     if let Ok(config) = &validation {
                         self.start(config.clone());
@@ -421,5 +796,7 @@ impl eframe::App for SerienbriefApp {
                     }
                 });
         });
+
+        self.column_config_window(ctx, editable && !self.is_downloading());
     }
 }

@@ -103,7 +103,7 @@ pub fn inspect_data_source(path: &Path) -> Result<DataSourceInfo> {
 }
 
 /// Bestimmt das Trennzeichen anhand der Kopfzeile (Semikolon, Komma oder Tabulator).
-fn detect_delimiter(bytes: &[u8]) -> u8 {
+pub(crate) fn detect_delimiter(bytes: &[u8]) -> u8 {
     let first_line = bytes.split(|byte| *byte == b'\n').next().unwrap_or(&[]);
     // Bei Gleichstand gewinnt der letzte Kandidat, daher steht das Semikolon am Ende.
     [b'\t', b',', b';']
@@ -113,7 +113,7 @@ fn detect_delimiter(bytes: &[u8]) -> u8 {
 }
 
 /// Dekodiert CSV-Inhalt als UTF-8, mit Rückfall auf ISO-8859-1.
-fn decode_text(bytes: &[u8]) -> String {
+pub(crate) fn decode_text(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => text.to_string(),
         Err(_) => bytes.iter().map(|&byte| byte as char).collect(),

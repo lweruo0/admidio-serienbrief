@@ -9,6 +9,9 @@ publish = false
 anyhow = "1"
 chrono = "0.4"
 csv = "1"
+md5 = "0.7"
+reqwest = { version = "0.12", features = ["blocking", "cookies"] }
+serde_json = "1"
 eframe = { version = "0.31", features = ["persistence"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
