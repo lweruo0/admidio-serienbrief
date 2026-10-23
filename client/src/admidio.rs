@@ -153,6 +153,96 @@ pub fn column_renames(mappings: &[ColumnMapping]) -> Result<HashMap<String, Stri
     Ok(renames)
 }
 
+/// Ein konfigurierbarer Knopf, der die Export-URLs mit einer bestimmten Rolle lädt.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct RoleButton {
+    /// Beschriftung des Knopfs, z. B. „Vorstand“ oder „Alle Mitglieder“.
+    pub name: String,
+    /// Wert des URL-Parameters `role_list`: in Admidio 5 eine oder mehrere Rollen-UUIDs,
+    /// durch Komma getrennt.
+    pub role_list: String,
+}
+
+/// Prüft die Rollen-Knöpfe und liefert die ausgefüllten Einträge in Reihenfolge.
+/// Zeilen, in denen beide Felder leer sind, werden übergangen; halb ausgefüllte Zeilen und
+/// doppelte Beschriftungen sind Fehler.
+pub fn role_buttons(buttons: &[RoleButton]) -> Result<Vec<RoleButton>> {
+    let mut result = Vec::new();
+    let mut names = HashSet::new();
+    for (index, button) in buttons.iter().enumerate() {
+        let name = button.name.trim();
+        let role_list = button.role_list.trim();
+        if name.is_empty() && role_list.is_empty() {
+            continue;
+        }
+        if name.is_empty() || role_list.is_empty() {
+            bail!("Rollen-Knöpfe, Zeile {}: Beschriftung und role_list müssen ausgefüllt sein", index + 1);
+        }
+        if !names.insert(name.to_string()) {
+            bail!("Rollen-Knöpfe: Beschriftung '{name}' ist mehrfach angegeben");
+        }
+        result.push(RoleButton {
+            name: name.to_string(),
+            role_list: role_list.to_string(),
+        });
+    }
+    Ok(result)
+}
+
+/// Ersetzt (oder ergänzt) die angegebenen Query-Parameter einer Listen-URL; alle anderen
+/// Parameter wie `list_uuid` und `mode` bleiben in ihrer Reihenfolge erhalten.
+pub fn with_query_params(list_url: &str, params: &[(&str, &str)]) -> Result<String> {
+    let mut url = reqwest::Url::parse(list_url.trim())
+        .with_context(|| format!("'{list_url}' ist keine gültige URL"))?;
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| !params.iter().any(|(name, _)| key == name))
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    {
+        let mut query = url.query_pairs_mut();
+        query.clear();
+        for (key, value) in &pairs {
+            query.append_pair(key, value);
+        }
+        for (name, value) in params {
+            query.append_pair(name, value.trim());
+        }
+    }
+    Ok(url.to_string())
+}
+
+/// Ersetzt die angegebenen Query-Parameter in jeder URL-Zeile des Textfelds; Leerzeilen und
+/// Kommentarzeilen (`#`) bleiben unverändert erhalten.
+pub fn replace_query_params(text: &str, params: &[(&str, &str)]) -> Result<String> {
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            lines.push(line.to_string());
+        } else {
+            lines.push(with_query_params(trimmed, params)?);
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Ersetzt `role_list` in jeder URL-Zeile des Textfelds.
+pub fn replace_role_list(text: &str, role_list: &str) -> Result<String> {
+    replace_query_params(text, &[("role_list", role_list)])
+}
+
+/// Liest einen Query-Parameter aus der ersten URL-Zeile des Textfelds. Liefert `None`,
+/// wenn keine URL eingetragen, die URL ungültig oder der Parameter nicht vorhanden ist.
+pub fn query_param(text: &str, name: &str) -> Option<String> {
+    let first = parse_urls(text).into_iter().next()?;
+    let url = reqwest::Url::parse(&first).ok()?;
+    url.query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.trim().to_string())
+}
+
 /// Meldungen des Download-Threads an die Oberfläche.
 #[derive(Debug)]
 pub enum DownloadEvent {
@@ -690,6 +780,68 @@ mod tests {
 
         assert!(parse_otp_list("Anfrage gesperrt").unwrap_err().to_string().contains("kein JSON"));
         assert!(parse_otp_list(r#"{"x": ["x", "1"]}"#).unwrap_err().to_string().contains("4 Felder"));
+    }
+
+    #[test]
+    fn role_list_is_replaced_in_url() {
+        let url = "https://verein.example.org/modules/groups-roles/lists_show.php?list_uuid=abc&role_list=alt&date_from=2026-01-01&date_to=2026-12-31&mode=csv";
+        assert_eq!(
+            with_query_params(url, &[("role_list", " 11111111-2222-3333-4444-555555555555 ")]).unwrap(),
+            "https://verein.example.org/modules/groups-roles/lists_show.php?list_uuid=abc&date_from=2026-01-01&date_to=2026-12-31&mode=csv&role_list=11111111-2222-3333-4444-555555555555"
+        );
+        // Ohne vorhandenen Parameter wird er ergänzt; Kommas bleiben URL-kodiert erhalten.
+        let without = "https://verein.example.org/modules/groups-roles/lists_show.php?list_uuid=abc&mode=csv";
+        assert_eq!(
+            with_query_params(without, &[("role_list", "a,b")]).unwrap(),
+            "https://verein.example.org/modules/groups-roles/lists_show.php?list_uuid=abc&mode=csv&role_list=a%2Cb"
+        );
+        assert!(with_query_params("kein://[url", &[("role_list", "a")]).is_err());
+    }
+
+    #[test]
+    fn role_list_is_replaced_in_every_url_line() {
+        let text = "# Kommentar\nhttps://a/modules/x?list_uuid=1&role_list=alt&mode=csv\n\n  https://b/modules/y?mode=csv  ";
+        assert_eq!(
+            replace_role_list(text, "neu").unwrap(),
+            "# Kommentar\nhttps://a/modules/x?list_uuid=1&mode=csv&role_list=neu\n\nhttps://b/modules/y?mode=csv&role_list=neu"
+        );
+        assert!(replace_role_list("kein://[url", "a").is_err());
+    }
+
+    #[test]
+    fn dates_are_replaced_and_read_back() {
+        let text = "https://a/modules/x?list_uuid=1&date_from=2020-01-01&role_list=r&date_to=2020-12-31&mode=csv";
+        let today = [("date_from", "2026-10-23"), ("date_to", "2026-10-23")];
+        let replaced = replace_query_params(text, &today).unwrap();
+        assert_eq!(
+            replaced,
+            "https://a/modules/x?list_uuid=1&role_list=r&mode=csv&date_from=2026-10-23&date_to=2026-10-23"
+        );
+        assert_eq!(query_param(&replaced, "date_from").as_deref(), Some("2026-10-23"));
+        assert_eq!(query_param(&replaced, "role_list").as_deref(), Some("r"));
+        assert_eq!(query_param("# nur Kommentar\n", "role_list"), None);
+        assert_eq!(query_param("https://a/modules/x?mode=csv", "role_list"), None);
+        assert_eq!(query_param("kein://[url", "mode"), None);
+    }
+
+    #[test]
+    fn role_buttons_are_validated() {
+        let buttons = vec![
+            RoleButton { name: " Vorstand ".into(), role_list: " uuid-1 ".into() },
+            RoleButton::default(),
+            RoleButton { name: "Alle".into(), role_list: "uuid-1,uuid-2".into() },
+        ];
+        let valid = role_buttons(&buttons).unwrap();
+        assert_eq!(valid.len(), 2);
+        assert_eq!(valid[0], RoleButton { name: "Vorstand".into(), role_list: "uuid-1".into() });
+
+        let half = vec![RoleButton { name: "Vorstand".into(), role_list: "".into() }];
+        assert!(role_buttons(&half).unwrap_err().to_string().contains("Zeile 1"));
+        let duplicate = vec![
+            RoleButton { name: "Vorstand".into(), role_list: "a".into() },
+            RoleButton { name: "Vorstand".into(), role_list: "b".into() },
+        ];
+        assert!(role_buttons(&duplicate).unwrap_err().to_string().contains("'Vorstand'"));
     }
 
     #[test]

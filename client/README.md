@@ -21,6 +21,10 @@ ohne weitere Abhängigkeiten kopiert werden.
 
 ## Bedienung
 
+Pflichtfelder, die noch leer oder ungültig sind, sind leicht rosa hinterlegt (im dunklen
+Design gedeckt rot). Sobald alle Felder einer Aktion ausgefüllt sind, wird der zugehörige
+Knopf grün.
+
 1. **Serienbrief (Word)**: Vorlage mit den Seriendruckfeldern auswählen.
 2. **Datenquelle (CSV)**: Export aus Admidio auswählen. Trennzeichen (`;`, `,` oder Tabulator)
    und Kodierung (UTF-8 oder ISO-8859-1) werden automatisch erkannt. Nach der Auswahl zeigt das
@@ -39,14 +43,29 @@ ohne weitere Abhängigkeiten kopiert werden.
 
 ### Datenquelle aus Admidio aktualisieren
 
-Der aufklappbare Bereich **Datenquelle aus Admidio aktualisieren** lädt die CSV-Exporte direkt
-aus Admidio:
+Unter den Pfadangaben stehen zwei Gruppen: **Admidio** (Anmeldung, Export-URL, Rolle,
+Zeitraum, Spaltenzuordnung) und **WordPress (Einmalpasswörter)**. Die Gruppe Admidio lädt die
+CSV-Exporte direkt aus Admidio:
 
 - **Benutzername** und **Passwort** des Admidio-Kontos. Der Benutzername wird gespeichert, das
   Passwort nicht.
-- **Export-URLs**, eine je Zeile. Das ist jeweils die URL des CSV-Exports einer Rollenliste,
-  z. B. `https://<host>/modules/groups-roles/lists_show.php?list_uuid=...&role_list=...&mode=csv`.
-  Zeilen, die mit `#` beginnen, werden ignoriert.
+- **Export-URL**: die URL des CSV-Exports einer Rollenliste,
+  z. B. `https://<host>/modules/groups-roles/lists_show.php?list_uuid=...&role_list=...&date_from=...&date_to=...&mode=csv`.
+  Mehrere URLs sind weiterhin möglich, eine je Zeile; Zeilen, die mit `#` beginnen, werden
+  ignoriert.
+- **Rolle wählen** (Rollen-Knöpfe): der Knopf **Bearbeiten …** öffnet eine Tabelle mit
+  Beschriftung (Rollenname) und dem Wert für den URL-Parameter `role_list`. In Admidio 5 ist
+  das die UUID der Rolle; mehrere Rollen werden durch Komma getrennt. Für jede Zeile erscheint
+  ein Knopf neben **Rolle wählen**. Ein Klick ersetzt in der Export-URL (bei mehreren Zeilen in
+  jeder) den Parameter `role_list` durch den Wert des Knopfs; fehlt er, wird er ergänzt. Die
+  übrigen Parameter `list_uuid`, `date_from`, `date_to` und `mode` bleiben unverändert. Der
+  Download selbst wird danach wie gewohnt mit **CSV aus Admidio laden** gestartet. Der Knopf,
+  dessen Wert gerade in der Export-URL steht, ist grün hervorgehoben. Leere Zeilen werden
+  ignoriert; halb ausgefüllte Zeilen und doppelte Beschriftungen werden rot gemeldet. Die
+  Knöpfe werden mit den übrigen Einstellungen gespeichert.
+- **Zeitraum**: zeigt `date_from` und `date_to` aus der Export-URL. Der Knopf **Heute** setzt
+  beide Parameter auf das aktuelle Datum (`JJJJ-MM-TT`) und ist grün, wenn die URL bereits auf
+  heute zeigt. Fehlen die Parameter, nimmt Admidio selbst das heutige Datum.
 - **Spaltenzuordnung**: der Knopf **Bearbeiten …** öffnet ein Fenster mit einer Tabelle, in der
   links der Spaltenname steht, den der Serienbrief (die CSV) erwartet, und rechts der Name des
   Felds im Admidio-Export (z. B. `Mitgliedsnummer` ← `Mitgliedsnr.`, `username` ← `Benutzername`).
@@ -55,11 +74,20 @@ aus Admidio:
   der aktuell gewählten CSV eine Zeile an, in der nur noch der Admidio-Name anzupassen ist.
   Leere Zeilen werden ignoriert; halb ausgefüllte Zeilen und doppelte Namen werden rot gemeldet
   und verhindern den Download. Die Zuordnung wird mit den übrigen Einstellungen gespeichert.
-- **Einmalpasswörter (WordPress)**, optional: Adresse der WordPress-Seite (z. B.
-  `https://bfv-ehingen.de/`) und das **OTP-Passwort** des Endpunkts. Bleibt die Adresse leer,
-  werden keine OTP-Spalten ergänzt. Das Häkchen **Einmalpasswörter auf dem Server neu erzeugen**
-  setzt `clearotp=1` wie in `one_time_passwords_get.py`. Adresse, Passwort und Häkchen werden
-  mit den Einstellungen gespeichert.
+Die Gruppe **WordPress (Einmalpasswörter)** ist optional:
+
+- Das Häkchen **Einmalpasswörter beim Download abrufen** schaltet den Abruf ein. Es wird
+  bewusst nicht gespeichert, damit die OTPs nicht versehentlich bei jedem Download geholt
+  werden. Solange es aus ist, bleiben die Felder darunter gesperrt und die CSV bekommt keine
+  OTP-Spalten.
+- **WordPress-Adresse** (z. B. `https://bfv-ehingen.de/`) und das **OTP-Passwort** des
+  Endpunkts. Beide werden mit den Einstellungen gespeichert.
+- Ist das Häkchen gesetzt, fragt das Programm beim Klick auf **CSV aus Admidio laden** in
+  einem Dialog, ob die bestehenden Einmalpasswörter auf dem Server gelöscht und neu erzeugt
+  werden sollen: **Ja** setzt `clearotp=1` wie in `one_time_passwords_get.py`, die alten OTPs
+  werden ungültig. **Nein** (`clearotp=0`) lässt die alten OTPs gültig und erzeugt zusätzlich
+  neue. **Abbrechen** startet keinen Download. Vorbelegt ist **Nein**, Enter löscht also nie
+  versehentlich die alten OTPs.
 
 Ablauf beim Klick auf **CSV aus Admidio laden**: Anmeldeseite (`system/login.php`, aus der
 ersten URL abgeleitet) abrufen, CSRF-Token und Session-Cookie übernehmen, anmelden, alle URLs
@@ -73,14 +101,23 @@ zusätzlich erzeugt das Programm im selben Ordner eine gleichnamige Excel-Datei 
 Liefert eine URL kein CSV (fehlende Berechtigung, falsche URL), bricht der Download mit
 Fehlermeldung ab.
 
-Ist eine WordPress-Adresse eingetragen, ruft das Programm nach dem Admidio-Download die
-OTP-Liste ab: `https://<wordpress-seite>/?getOTPlist=1&passwd=<OTP-Passwort>&nonce=<MD5 des
+Ist der Abruf der Einmalpasswörter eingeschaltet, ruft das Programm nach dem Admidio-Download
+die OTP-Liste ab: `https://<wordpress-seite>/?getOTPlist=1&passwd=<OTP-Passwort>&nonce=<MD5 des
 Datums JJJJMMTT>&clearotp=<0|1>`. Die Antwort ist ein JSON-Objekt mit dem Anmeldenamen als
 Schlüssel und `[Anmeldename, Mitgliedsnummer, otp1, otp2]` als Wert. Jeder Datensatz erhält
 die Spalten `otp1` und `otp2`; zugeordnet wird über die Spalte `username` (Anmeldename),
 ersatzweise über `Mitgliedsnummer`. Datensätze ohne Treffer bekommen leere OTP-Spalten, das
 Protokoll nennt ihre Anzahl. Ist die Antwort kein JSON (z. B. „Anfrage gesperrt“), bricht der
 Download mit Fehlermeldung ab, die CSV wird dann nicht geschrieben.
+
+Der Knopf **Word öffnen** daneben startet Word sichtbar, öffnet die gewählte
+Serienbrief-Vorlage und hängt die eingetragene Datenquelle als Seriendruck-Datenquelle an,
+genau wie beim Lauf. So lassen sich Seriendruckfelder und Vorschau direkt in Word prüfen.
+Fehlt die Datenquelle oder ist sie unlesbar, wird nur die Vorlage geöffnet; das Protokoll
+sagt es. Word bleibt danach geöffnet, Änderungen an der Vorlage speichert man in Word
+selbst. Der Knopf ist nur aktiv, solange die Vorlage vorhanden ist und kein Lauf läuft.
+**Zielordner öffnen** zeigt den Zielordner im Explorer; der Knopf ist aktiv, sobald der Ordner
+existiert, also auch während eines Laufs, um die entstehenden PDFs zu sehen.
 
 Der Knopf **PDFs erzeugen** startet den Lauf. Fortschritt, vergangene und geschätzte Restzeit
 sowie ein Protokoll der erzeugten Dateien werden angezeigt. Die zuletzt verwendeten Eingaben
@@ -92,7 +129,7 @@ werden beim Beenden gespeichert.
 |--------------------|-------------------------------------------------------------------------|
 | `src/main.rs`      | Oberfläche (egui/eframe), Eingabeprüfung, Fortschrittsanzeige           |
 | `src/merge.rs`     | CSV-Analyse, Platzhalter, Aufteilung auf Threads, Steuerung von Word     |
-| `src/admidio.rs`   | Anmeldung bei Admidio, Download, Spaltenzuordnung, Zusammenführen der CSV-Exporte, OTP-Abruf von WordPress |
+| `src/admidio.rs`   | Anmeldung bei Admidio, Download, Spaltenzuordnung, Rollen-Knöpfe und Zeitraum (`role_list`, `date_from`, `date_to` in der URL ersetzen), Zusammenführen der CSV-Exporte, OTP-Abruf von WordPress |
 | `test/`            | Beispielvorlage `example.docx` und `example.csv` mit 800 Datensätzen     |
 | `src/word.rs`      | Late-Binding-Wrapper um `IDispatch` (Property-Zugriff, Methodenaufrufe) |
 

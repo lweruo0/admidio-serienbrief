@@ -347,6 +347,27 @@ fn merge_record(
     Ok(target)
 }
 
+/// Öffnet die Vorlage sichtbar in Word und hängt die Datenquelle als Seriendruck-Datenquelle
+/// an, so wie es der Lauf tut. Word bleibt danach für den Benutzer geöffnet. Blockiert, bis
+/// Word gestartet ist, und gehört deshalb in einen eigenen Thread.
+pub fn open_in_word(template: &Path, data_source: Option<&Path>) -> Result<()> {
+    let _apartment = ComApartment::new()?;
+    let app = ComObject::create("Word.Application")?;
+    let documents = app.get_object("Documents")?;
+    let document = documents
+        .call_object("Open", vec![path_variant(template)])
+        .with_context(|| format!("Vorlage '{}' kann nicht geöffnet werden", template.display()))?;
+    if let Some(data_source) = data_source {
+        document
+            .get_object("MailMerge")?
+            .call("OpenDataSource", vec![path_variant(data_source)])
+            .with_context(|| format!("Datenquelle '{}' kann nicht angehängt werden", data_source.display()))?;
+    }
+    app.put("Visible", true)?;
+    let _ = app.call("Activate", Vec::new());
+    Ok(())
+}
+
 /// Wandelt einen Pfad in einen VARIANT-String für Word.
 fn path_variant(path: &Path) -> VARIANT {
     VARIANT::from(path.to_string_lossy().as_ref())
