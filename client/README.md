@@ -66,10 +66,12 @@ ersten URL abgeleitet) abrufen, CSRF-Token und Session-Cookie übernehmen, anmel
 laden. Die Spaltenköpfe jedes Exports werden gemäß Spaltenzuordnung umbenannt, die Exporte
 dann nach Spaltennamen vereinigt, vollständig identische Datensätze (Mitglied in mehreren
 Rollen) nur einmal übernommen. Das Protokoll nennt die angewendeten Umbenennungen und warnt,
-wenn ein zugeordnetes Admidio-Feld in keinem Export vorkam. Das Ergebnis wird als UTF-8 mit BOM
-in die oben eingetragene Datenquelle geschrieben; ist dort noch nichts eingetragen, fragt das
-Programm nach einer Zieldatei. Liefert eine URL kein CSV (fehlende Berechtigung, falsche URL),
-bricht der Download mit Fehlermeldung ab.
+wenn ein zugeordnetes Admidio-Feld in keinem Export vorkam. Das Ergebnis wird als UTF-8 ohne BOM
+mit Semikolon als Spaltentrennzeichen in die oben eingetragene CSV-Datenquelle geschrieben;
+zusätzlich erzeugt das Programm im selben Ordner eine gleichnamige Excel-Datei mit der Endung
+`.xlsx`. Ist noch keine Zieldatei eingetragen, fragt das Programm nach einem CSV-Zielpfad.
+Liefert eine URL kein CSV (fehlende Berechtigung, falsche URL), bricht der Download mit
+Fehlermeldung ab.
 
 Ist eine WordPress-Adresse eingetragen, ruft das Programm nach dem Admidio-Download die
 OTP-Liste ab: `https://<wordpress-seite>/?getOTPlist=1&passwd=<OTP-Passwort>&nonce=<MD5 des

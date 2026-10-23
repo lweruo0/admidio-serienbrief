@@ -13,6 +13,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::blocking::Client;
 use reqwest::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use rust_xlsxwriter::Workbook;
 
 use crate::merge::{decode_text, detect_delimiter};
 
@@ -214,7 +215,7 @@ fn log(tx: &Sender<DownloadEvent>, line: impl Into<String>) {
     let _ = tx.send(DownloadEvent::Log(line.into()));
 }
 
-/// Meldet sich an, lädt alle Listen und schreibt die zusammengeführte CSV-Datei.
+/// Meldet sich an, lädt alle Listen und schreibt die zusammengeführte CSV- und Excel-Datei.
 fn download(config: &AdmidioConfig, tx: &Sender<DownloadEvent>) -> Result<PathBuf> {
     if config.urls.is_empty() {
         bail!("Keine Export-URL angegeben");
@@ -328,15 +329,19 @@ fn download(config: &AdmidioConfig, tx: &Sender<DownloadEvent>) -> Result<PathBu
         fs::create_dir_all(parent)
             .with_context(|| format!("Ordner '{}' kann nicht angelegt werden", parent.display()))?;
     }
+    let xlsx_target = config.target.with_extension("xlsx");
+    fs::write(&xlsx_target, table.to_xlsx()?)
+        .with_context(|| format!("'{}' kann nicht geschrieben werden", xlsx_target.display()))?;
     fs::write(&config.target, table.to_csv()?)
         .with_context(|| format!("'{}' kann nicht geschrieben werden", config.target.display()))?;
     log(
         tx,
         format!(
-            "{} Datensätze mit {} Spalten nach {} geschrieben.",
+            "{} Datensätze mit {} Spalten nach {} und {} geschrieben.",
             table.rows.len(),
             table.columns.len(),
-            config.target.display()
+            config.target.display(),
+            xlsx_target.display()
         ),
     );
     Ok(config.target.clone())
@@ -371,7 +376,6 @@ fn lookup_otp<'a>(
 pub struct Table {
     pub columns: Vec<String>,
     pub rows: Vec<HashMap<String, String>>,
-    delimiter: Option<u8>,
     /// Umbenennungen Admidio-Feld → CSV-Spalte.
     renames: HashMap<String, String>,
     /// Originale Spaltennamen aller bisher eingelesenen Exporte.
@@ -412,7 +416,6 @@ impl Table {
     pub fn add_csv(&mut self, bytes: &[u8]) -> Result<usize> {
         let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
         let delimiter = detect_delimiter(bytes);
-        self.delimiter.get_or_insert(delimiter);
 
         let mut reader = csv::ReaderBuilder::new()
             .delimiter(delimiter)
@@ -499,15 +502,15 @@ impl Table {
         (matched, unmatched)
     }
 
-    /// Schreibt die Tabelle als CSV (UTF-8 mit BOM, Trennzeichen wie im ersten Export).
+    /// Schreibt die Tabelle als UTF-8-Datei ohne BOM mit Semikolon als Trennzeichen.
     pub fn to_csv(&self) -> Result<Vec<u8>> {
         if self.columns.is_empty() {
             bail!("Keine Daten zum Schreiben");
         }
         let mut writer = csv::WriterBuilder::new()
-            .delimiter(self.delimiter.unwrap_or(b';'))
+            .delimiter(b';')
             .terminator(csv::Terminator::CRLF)
-            .from_writer(vec![0xEF, 0xBB, 0xBF]);
+            .from_writer(Vec::new());
         writer.write_record(&self.columns)?;
         for row in &self.rows {
             writer.write_record(
@@ -517,6 +520,46 @@ impl Table {
             )?;
         }
         Ok(writer.into_inner()?)
+    }
+
+    /// Schreibt die Tabelle als Excel-Arbeitsmappe mit einer Tabelle.
+    pub fn to_xlsx(&self) -> Result<Vec<u8>> {
+        if self.columns.is_empty() {
+            bail!("Keine Daten zum Schreiben");
+        }
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+        for (column_index, column) in self.columns.iter().enumerate() {
+            let column_index =
+                u16::try_from(column_index).context("Zu viele Spalten für eine Excel-Tabelle")?;
+            worksheet
+                .write_string(0, column_index, column)
+                .context("Excel-Kopfzeile konnte nicht geschrieben werden")?;
+        }
+        for (row_index, row) in self.rows.iter().enumerate() {
+            let row_index =
+                u32::try_from(row_index + 1).context("Zu viele Zeilen für eine Excel-Tabelle")?;
+            for (column_index, column) in self.columns.iter().enumerate() {
+                let column_index = u16::try_from(column_index)
+                    .context("Zu viele Spalten für eine Excel-Tabelle")?;
+                worksheet
+                    .write_string(
+                        row_index,
+                        column_index,
+                        row.get(column).map(String::as_str).unwrap_or(""),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Excel-Zelle in Zeile {}, Spalte {} konnte nicht geschrieben werden",
+                            row_index + 1,
+                            column_index + 1
+                        )
+                    })?;
+            }
+        }
+        workbook
+            .save_to_buffer()
+            .context("Excel-Datei konnte nicht erstellt werden")
     }
 }
 
@@ -555,10 +598,15 @@ mod tests {
         let third = table.add_csv(b"Mitgliedsnummer,username,Vorname\r\n1,max,Max\r\n").unwrap();
         assert_eq!((first, second, third), (2, 2, 0));
         assert_eq!(table.columns, vec!["Mitgliedsnummer", "username", "Vorname", "Ort"]);
-        let csv = String::from_utf8(table.to_csv().unwrap()).unwrap();
-        assert!(csv.starts_with("\u{FEFF}Mitgliedsnummer,username,Vorname,Ort\r\n"));
-        assert!(csv.contains("3,hans,,Ehingen\r\n"));
+        let bytes = table.to_csv().unwrap();
+        assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
+        let csv = String::from_utf8(bytes).unwrap();
+        assert!(csv.starts_with("Mitgliedsnummer;username;Vorname;Ort\r\n"));
+        assert!(csv.contains("3;hans;;Ehingen\r\n"));
         assert_eq!(csv.lines().count(), 5);
+
+        let xlsx = table.to_xlsx().unwrap();
+        assert!(xlsx.starts_with(b"PK\x03\x04"));
     }
 
     #[test]

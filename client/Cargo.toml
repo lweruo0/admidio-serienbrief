@@ -20,6 +20,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_System_Variant",
 ] }
+rust_xlsxwriter = "0.101.0"
 
 [profile.release]
 opt-level = 2
