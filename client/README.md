@@ -8,6 +8,8 @@ CSV-Datenquelle pro Datensatz eine PDF-Datei erzeugt. Es ist der Nachbau von
 
 - Windows mit installiertem Microsoft Word (COM-ProgID `Word.Application`).
 - Rust-Toolchain (stable, Ziel `x86_64-pc-windows-msvc`).
+- Für das optionale Anhängen eines Flyers: `pdftk.exe` neben dem Client oder in einem Ordner
+  aus `PATH`.
 
 ## Bauen und starten
 
@@ -16,8 +18,9 @@ cd client
 cargo run --release
 ```
 
-Die fertige Datei liegt danach unter `target\release\serienbrief-client.exe` und kann
-ohne weitere Abhängigkeiten kopiert werden.
+Die fertige Datei liegt danach unter `target\release\serienbrief-client.exe`. Ohne Flyer-Auswahl
+kann sie eigenständig kopiert werden; für das Anhängen eines Flyers wird zusätzlich `pdftk.exe`
+benötigt.
 
 ## Bedienung
 
@@ -31,14 +34,20 @@ Knopf grün.
    Programm Datensatzanzahl, Spaltennamen und eine Vorschau des ersten Dateinamens.
 3. **Zielordner**: wird beim Auswählen der Vorlage mit `<Ordner der Vorlage>\<Datum>-Rundschreiben`
    vorbelegt und bei Bedarf angelegt.
-4. **Dateiname**: Muster mit Platzhaltern in geschweiften Klammern, Standard
+4. **Flyer anhängen (PDF, optional)**: wählt eine PDF-Datei aus, die jeder erzeugten PDF
+   angehängt wird. Alle Seiten des Serienbriefs und des Flyers bleiben erhalten. Für die
+   Verarbeitung muss `pdftk.exe` im Client- oder Anwendungsordner oder in einem Ordner aus
+   `PATH` vorhanden sein. Das Feld kann leer bleiben, um keinen Flyer anzuhängen.
+5. **Dateiname**: Muster mit Platzhaltern in geschweiften Klammern, Standard
    `rundschreiben-{Mitgliedsnummer}-{username}.pdf`. Jeder Platzhalter muss eine Spalte der
-   Datenquelle sein; unbekannte Platzhalter werden rot angezeigt. In Dateinamen unzulässige
-   Zeichen (`\ / : * ? " < > |`) werden durch `_` ersetzt.
-5. **Parallele Word-Instanzen**: Anzahl der gleichzeitig laufenden Word-Prozesse (Standard 8).
+   Datenquelle sein; unbekannte Platzhalter werden rot angezeigt. Das Muster muss pro Datensatz
+   einen eindeutigen Dateinamen ergeben; doppelte Namen werden vor dem Start gemeldet, damit
+   keine PDF unbemerkt überschrieben wird. In Dateinamen unzulässige Zeichen
+   (`\ / : * ? " < > |`) werden durch `_` ersetzt.
+6. **Parallele Word-Instanzen**: Anzahl der gleichzeitig laufenden Word-Prozesse (Standard 8).
    Die Datensätze werden in gleich große Blöcke aufgeteilt, jeder Block läuft in einer eigenen
    Word-Instanz mit eigener Kopie von Vorlage und Datenquelle im Temp-Ordner.
-6. **Word-Prozesse beenden**: optional, entspricht dem `taskkill` im Python-Skript. Achtung:
+7. **Word-Prozesse beenden**: optional, entspricht dem `taskkill` im Python-Skript. Achtung:
    beendet auch offene Word-Fenster mit ungesicherten Änderungen.
 
 ### Datenquelle aus Admidio aktualisieren
@@ -128,7 +137,7 @@ werden beim Beenden gespeichert.
 | Datei              | Inhalt                                                                  |
 |--------------------|-------------------------------------------------------------------------|
 | `src/main.rs`      | Oberfläche (egui/eframe), Eingabeprüfung, Fortschrittsanzeige           |
-| `src/merge.rs`     | CSV-Analyse, Platzhalter, Aufteilung auf Threads, Steuerung von Word     |
+| `src/merge.rs`     | CSV-Analyse, Platzhalter, Aufteilung auf Threads, Steuerung von Word und Flyer-PDFs |
 | `src/admidio.rs`   | Anmeldung bei Admidio, Download, Spaltenzuordnung, Rollen-Knöpfe und Zeitraum (`role_list`, `date_from`, `date_to` in der URL ersetzen), Zusammenführen der CSV-Exporte, OTP-Abruf von WordPress |
 | `test/`            | Beispielvorlage `example.docx` und `example.csv` mit 800 Datensätzen     |
 | `src/word.rs`      | Late-Binding-Wrapper um `IDispatch` (Property-Zugriff, Methodenaufrufe) |

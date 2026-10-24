@@ -52,6 +52,7 @@ struct Settings {
     template: String,
     data_source: String,
     output_dir: String,
+    flyer_path: String,
     file_pattern: String,
     thread_count: usize,
     kill_word: bool,
@@ -75,6 +76,7 @@ impl Default for Settings {
             template: String::new(),
             data_source: String::new(),
             output_dir: String::new(),
+            flyer_path: String::new(),
             file_pattern: DEFAULT_PATTERN.to_string(),
             thread_count: 8,
             kill_word: false,
@@ -726,6 +728,16 @@ impl SerienbriefApp {
         if output_dir.is_empty() {
             return Err("Bitte einen Zielordner angeben.".to_string());
         }
+        let flyer = self.settings.flyer_path.trim();
+        let flyer = if flyer.is_empty() {
+            None
+        } else {
+            let path = PathBuf::from(flyer);
+            if !path.is_file() {
+                return Err("Bitte eine vorhandene Flyer-PDF auswählen.".to_string());
+            }
+            Some(path)
+        };
         let pattern = self.settings.file_pattern.trim();
         if pattern.is_empty() || merge::placeholders(pattern).is_empty() {
             return Err("Das Dateinamen-Muster braucht mindestens einen Platzhalter.".to_string());
@@ -738,6 +750,7 @@ impl SerienbriefApp {
             template,
             data_source,
             output_dir: PathBuf::from(output_dir),
+            flyer,
             file_pattern: pattern.to_string(),
             thread_count: self.settings.thread_count.clamp(1, 32),
             kill_word: self.settings.kill_word,
@@ -776,6 +789,17 @@ impl SerienbriefApp {
                 Progress::RecordDone => self.done += 1,
                 Progress::RecordFailed => self.failed += 1,
                 Progress::Finished(duration) => finished = Some(duration),
+                Progress::Aborted(duration) => {
+                    self.finished = Some(duration);
+                    self.receiver = None;
+                    self.log.push(format!(
+                        "Abbruch nach {} ({} PDFs, {} Fehler)",
+                        merge::format_duration(duration),
+                        self.done,
+                        self.failed
+                    ));
+                    return;
+                }
             }
         }
         if let Some(duration) = finished {
@@ -1025,6 +1049,8 @@ impl eframe::App for SerienbriefApp {
             let template_missing = !Path::new(self.settings.template.trim()).is_file();
             let data_missing = !Path::new(self.settings.data_source.trim()).is_file() || self.data_error.is_some();
             let output_missing = self.settings.output_dir.trim().is_empty();
+            let flyer = self.settings.flyer_path.trim();
+            let flyer_missing = !flyer.is_empty() && !Path::new(flyer).is_file();
             let pattern = self.settings.file_pattern.trim();
             let pattern_missing = pattern.is_empty()
                 || merge::placeholders(pattern).is_empty()
@@ -1067,6 +1093,19 @@ impl eframe::App for SerienbriefApp {
                         editable,
                         output_missing,
                         || rfd::FileDialog::new().pick_folder(),
+                    );
+                    Self::path_row(
+                        ui,
+                        "Flyer anhängen (PDF, optional)",
+                        &mut self.settings.flyer_path,
+                        editable,
+                        flyer_missing,
+                        || {
+                            rfd::FileDialog::new()
+                                .add_filter("PDF-Dateien", &["pdf"])
+                                .add_filter("Alle Dateien", &["*"])
+                                .pick_file()
+                        },
                     );
 
                     ui.label("Dateiname");
